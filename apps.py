@@ -5,7 +5,6 @@ from google.genai import types
 # --- 0. Setup Klien Gemini & Konfigurasi ---
 
 # Mengambil kunci API dari Streamlit Secrets
-# Pastikan Anda telah menyimpan kunci API Anda di .streamlit/secrets.toml atau di Streamlit Cloud Secrets
 try:
     API_KEY = st.secrets["gemini_api_key"]
 except KeyError:
@@ -29,7 +28,6 @@ def call_gemini_api(system_instruction, user_prompt):
 
     with st.spinner("Memproses dengan Gemini Editor..."):
         try:
-            # Gunakan generate_content dengan konfigurasi
             response = client.models.generate_content(
                 model=MODEL,
                 contents=user_prompt,
@@ -40,11 +38,12 @@ def call_gemini_api(system_instruction, user_prompt):
             st.error(f"Terjadi kesalahan saat memanggil API: {e}")
             return None
 
-# --- 2. Template Halaman Universal ---
+# --- 2. Template Halaman Universal (Dengan Fitur Copy-Paste) ---
 
 def render_content_page(title, instructions, action_type, rules_context_placeholder, specific_prompt_template):
     """
     Template Halaman untuk Copy Editing, Proofreading, dan Templating.
+    Ditambahkan fitur Copy-Paste per segmentasi hasil.
     """
     st.header(title)
     st.markdown(instructions)
@@ -53,33 +52,47 @@ def render_content_page(title, instructions, action_type, rules_context_placehol
     context = st.text_area(
         "Masukkan aturan jurnal (e.g., gaya sitasi, batasan kata, formalitas):",
         value=rules_context_placeholder,
-        height=100
+        height=100,
+        key=f"{title}_context"
     )
 
     st.subheader("2. Teks Draft")
-    input_text = st.text_area("Masukkan teks yang akan diproses:", height=300)
+    input_text = st.text_area("Masukkan teks yang akan diproses:", height=300, key=f"{title}_input")
+
+    # Inisialisasi state untuk menyimpan hasil
+    if f"{title}_result" not in st.session_state:
+        st.session_state[f"{title}_result"] = ""
 
     if st.button(f"Jalankan {action_type}", type="primary"):
         if not input_text or not context:
             st.warning("Mohon masukkan teks draft dan Aturan Konteks.")
         else:
-            # Format prompt spesifik dengan input dan konteks
             final_prompt = specific_prompt_template.format(input_text=input_text, rules_context=context)
             
             # Panggil API
             result = call_gemini_api(
-                # System Instruction yang kuat
-                system_instruction=f"Anda adalah {action_type} Akademik tingkat Scopus Q1. Selalu patuhi Rules Context.", 
+                system_instruction=f"Anda adalah {action_type} Akademik tingkat Scopus Q1. Selalu patuhi Rules Context. Berikan output yang terstruktur dan mudah disalin.", 
                 user_prompt=final_prompt
             )
             
             if result:
-                st.subheader("🎉 Hasil Olahan Gemini")
-                st.markdown(result)
+                st.session_state[f"{title}_result"] = result
+                st.success("Analisis Selesai! Hasil ada di bawah.")
 
-# --- 3. Definisi Fungsi Spesifik (Prompt Templates) ---
+    # --- Bagian Hasil dan Copy-Paste ---
+    if st.session_state.get(f"{title}_result"):
+        st.subheader("🎉 Hasil Olahan Gemini (Siap Salin)")
+        
+        # Menggunakan st.text_area untuk hasil sehingga mudah dicopy-paste
+        st.text_area(
+            "Salin Teks Revisi/Template di Bawah:",
+            st.session_state[f"{title}_result"],
+            height=400,
+            key=f"{title}_output_copy"
+        )
+        # st.markdown(st.session_state[f"{title}_result"]) # Bisa diganti dengan ini jika ingin format Markdown asli
 
-# --- A. Copy Editing (Fokus Substansi & Logika) ---
+# --- 3. Definisi Fungsi Spesifik (Prompt Templates, sama seperti sebelumnya) ---
 
 def copy_editing_title_prompt():
     return """
@@ -94,7 +107,7 @@ def copy_editing_title_prompt():
 
 def copy_editing_main_text_prompt():
     return """
-    Tugas Anda adalah melakukan Copy Editing substantif pada Teks Utama (Pendahuluan, Metode, Hasil, Diskusi, Kesimpulan). Fokus pada:
+    Tugas Anda adalah melakukan Copy Editing substantif pada Teks Utama. Fokus pada:
     1. Koherensi logis antar paragraf.
     2. Konsistensi argumentasi dan alur narasi akademik.
     3. Meningkatkan kepadatan informasi (conciseness).
@@ -105,7 +118,6 @@ def copy_editing_main_text_prompt():
 
     Tampilkan hasilnya dalam format 'Original Text' dan 'Suggested Logical Revisions'.
     """
-# --- B. Proofreading (Fokus Grammar & Format) ---
 
 def proofreading_grammar_prompt():
     return """
@@ -146,8 +158,6 @@ def proofreading_acknowledgement_prompt():
     Tampilkan 'Original' dan 'Formatted Version'.
     """
 
-# --- C. Templating (Fokus Struktur & Format Penerbit) ---
-
 def templating_abstract_prompt():
     return """
     Tugas Anda adalah menyusun ulang draft abstrak ini menjadi abstrak Scopus Q1 yang sangat PERSUASIF dan INFORMATIF.
@@ -176,7 +186,6 @@ def templating_imrad_prompt():
 
 # --- 4. Struktur Menu Utama Streamlit (Routing) ---
 
-# Pengaturan Global
 st.set_page_config(
     page_title="Gemini Scopus Q1 Editor",
     layout="wide",
@@ -189,29 +198,27 @@ st.markdown("Aplikasi AI untuk menyempurnakan paper akademik sesuai standar publ
 # --- Sidebar Menu ---
 st.sidebar.title("🛠️ Fitur Editor")
 
-main_menu = st.sidebar.radio(
-    "Pilih Fitur Utama:",
+# Pilihan Fitur Utama menggunakan Dropdown (Selectbox)
+main_menu = st.sidebar.selectbox(
+    "1. Pilih Fitur Utama:",
     ["Tentang Aplikasi", "Copy Editing (Substansi)", "Proofreading (Grammar/Format)", "Templating (Struktur)"]
 )
 
-# --- Routing Logika Berdasarkan Pilihan Menu ---
+# --- Sub-Menu Logika dan Routing ---
 
 if main_menu == "Tentang Aplikasi":
     st.info("Selamat datang di Editor Scopus Q1. Gunakan menu samping untuk memilih layanan yang Anda butuhkan.")
     st.subheader("Prinsip Kerja:")
-    st.markdown("Aplikasi ini menggunakan model **Gemini 2.5 Flash** yang diinstruksikan untuk bertindak sebagai editor jurnal Q1. Kualitas output sangat bergantung pada **Aturan Konteks** yang Anda masukkan.")
-    st.subheader("Status Model:")
-    st.markdown(f"Menggunakan Model: **{MODEL}**")
-    st.markdown(f"Temperatur Model: **{TEMPERATURE}** (Rendah, untuk formalitas dan akurasi).")
+    st.markdown("Aplikasi ini menggunakan **Prompt Engineering** canggih untuk menginstruksikan Gemini 2.5 Flash agar bertindak sebagai editor Q1.")
+    st.markdown(f"Model: **{MODEL}** (Dioptimalkan untuk kecepatan dan formalitas).")
 
 elif main_menu == "Copy Editing (Substansi)":
-    st.sidebar.subheader("Sub-Menu Copy Editing")
-    sub_menu = st.sidebar.radio(
-        "Pilih Bagian Paper:",
+    st.sidebar.subheader("2. Pilih Bagian Paper (Copy Editing)")
+    sub_menu = st.sidebar.selectbox(
+        "Fokus Substansi:",
         ["Judul", "Teks Utama (Intro, Metode, Dll)"]
     )
-    # Default Rule untuk Copy Editing
-    rules_placeholder = "Gunakan bahasa yang padat, formal, dan fokus pada kebaruan penelitian (novelty). Targetkan pembaca yang sangat spesifik."
+    rules_placeholder = "Gunakan bahasa yang padat, formal, dan fokus pada kebaruan penelitian (novelty)."
 
     if sub_menu == "Judul":
         render_content_page(
@@ -231,13 +238,12 @@ elif main_menu == "Copy Editing (Substansi)":
         )
 
 elif main_menu == "Proofreading (Grammar/Format)":
-    st.sidebar.subheader("Sub-Menu Proofreading")
-    sub_menu = st.sidebar.radio(
-        "Pilih Bagian Paper:",
+    st.sidebar.subheader("2. Pilih Bagian Paper (Proofreading)")
+    sub_menu = st.sidebar.selectbox(
+        "Fokus Grammar/Format:",
         ["Tata Bahasa & Pilihan Kata", "Daftar Pustaka (Dapus)", "Acknowledgement & Lampiran"]
     )
-    # Default Rule untuk Proofreading
-    rules_placeholder = "Pastikan semua grammar Bahasa Inggris formal dan hindari kalimat pasif. Periksa konsistensi penggunaan huruf miring (italics)."
+    rules_placeholder = "Pastikan semua grammar Bahasa Inggris formal. Periksa konsistensi penggunaan huruf miring (italics) dan kapitalisasi."
 
     if sub_menu == "Tata Bahasa & Pilihan Kata":
         render_content_page(
@@ -248,8 +254,7 @@ elif main_menu == "Proofreading (Grammar/Format)":
             proofreading_grammar_prompt()
         )
     elif sub_menu == "Daftar Pustaka (Dapus)":
-        # Aturan Dapus harus spesifik ke gaya sitasi
-        dapus_rules = "Terapkan gaya sitasi APA 7th ed. secara ketat pada Daftar Pustaka. Perhatikan format DOI/URL dan kapitalisasi judul artikel."
+        dapus_rules = "Terapkan gaya sitasi APA 7th ed. secara ketat. Perhatikan format DOI/URL dan kapitalisasi judul artikel."
         render_content_page(
             "Proofreading: Daftar Pustaka (Dapus)",
             "Memastikan Dapus Anda 100% sesuai dengan gaya sitasi yang diminta jurnal.",
@@ -260,19 +265,18 @@ elif main_menu == "Proofreading (Grammar/Format)":
     elif sub_menu == "Acknowledgement & Lampiran":
         render_content_page(
             "Proofreading: Acknowledgement & Lampiran", 
-            "Memastikan bagian pendukung paper Anda (Ucapan Terima Kasih, dll.) sesuai format formal.", 
+            "Memastikan bagian pendukung paper Anda sesuai format formal.", 
             "Format Editor", 
             rules_placeholder, 
             proofreading_acknowledgement_prompt()
         )
 
 elif main_menu == "Templating (Struktur)":
-    st.sidebar.subheader("Sub-Menu Templating")
-    sub_menu = st.sidebar.radio(
-        "Pilih Struktur Paper:",
+    st.sidebar.subheader("2. Pilih Struktur (Templating)")
+    sub_menu = st.sidebar.selectbox(
+        "Fokus Struktur:",
         ["Abstrak", "Struktur Penuh (IMRAD/Pendahuluan)"]
     )
-    # Default Rule untuk Templating
     templating_rules = "Pastikan output sesuai batasan format penerbit. Abstrak harus 250 kata, menggunakan format: Background, Method, Result, Conclusion."
 
     if sub_menu == "Abstrak":
@@ -286,7 +290,7 @@ elif main_menu == "Templating (Struktur)":
     elif sub_menu == "Struktur Penuh (IMRAD/Pendahuluan)":
         render_content_page(
             "Templating: Struktur Penuh (IMRAD)",
-            "Susun ulang draft Anda ke dalam kerangka IMRAD (Introduction, Method, Result, Discussion) standar jurnal Q1.",
+            "Susun ulang draft Anda ke dalam kerangka IMRAD standar jurnal Q1.",
             "Templating Specialist",
             templating_rules,
             templating_imrad_prompt()
