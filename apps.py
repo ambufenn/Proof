@@ -6,6 +6,7 @@ from google.genai import types
 
 # --- 0. Setup Klien Gemini & Konfigurasi ---
 
+# Pastikan API Key ada di st.secrets["gemini_api_key"]
 try:
     API_KEY = st.secrets["gemini_api_key"]
 except KeyError:
@@ -14,14 +15,14 @@ except KeyError:
 
 client = genai.Client(api_key=API_KEY)
 MODEL_FLASH = 'gemini-2.5-flash'
-MODEL_PRO = 'gemini-2.5-pro' # Digunakan untuk tugas penalaran kompleks dan multimodal
+MODEL_PRO = 'gemini-2.5-pro' 
 TEMPERATURE = 0.3
 
 # --- 1. Fungsi Inti: Panggilan Model Gemini ---
 
 def call_gemini_api(system_instruction, user_prompt, model_choice=MODEL_FLASH, file_parts=None):
     """
-    Fungsi utilitas untuk memanggil Gemini API, mendukung input multimodal (teks dan gambar).
+    Fungsi utilitas untuk memanggil Gemini API, mendukung input multimodal.
     """
     contents = [user_prompt]
     if file_parts:
@@ -41,6 +42,7 @@ def call_gemini_api(system_instruction, user_prompt, model_choice=MODEL_FLASH, f
             )
             return response.text
         except Exception as e:
+            # Menonaktifkan tool_config jika terjadi error spesifik
             st.error(f"Terjadi kesalahan saat memanggil API: {e}")
             return None
 
@@ -75,7 +77,7 @@ def extract_rules_from_file(uploaded_file):
         return rules_text if rules_text else "Gagal mengekstrak aturan dari gambar."
 
     elif file_type == "application/pdf":
-        st.warning("Ekstraksi PDF kompleks. Silakan salin teks aturan dari PDF secara manual atau unggah sebagai file gambar (screenshot/foto halaman).")
+        st.warning("Ekstraksi PDF kompleks. Silakan salin teks aturan dari PDF secara manual atau unggah sebagai file gambar.")
         return None
     
     else:
@@ -183,16 +185,23 @@ def copy_editing_chat_page():
         key="chat_rules_input"
     )
     
-    # Inisialisasi riwayat chat dan chat service
+    if not rules_placeholder:
+        st.warning("Mohon masukkan Aturan Konteks untuk memulai diskusi.")
+        return 
+
+    # --- 2. Setup Chat Session State ---
+    
+    LAST_RULES_KEY = "last_rules_used" 
+    
     if "messages" not in st.session_state:
         st.session_state.messages = []
+        
+    # LOGIKA UTAMA RESET/INISIALISASI:
+    rules_changed = (st.session_state.get(LAST_RULES_KEY) != rules_placeholder)
     
-    if "chat_service" not in st.session_state or st.session_state.chat_service.system_instruction != rules_placeholder:
-        # Reset atau inisialisasi chat service jika Rules Context berubah
-        if not rules_placeholder:
-             st.warning("Mohon masukkan Aturan Konteks untuk memulai diskusi.")
-             return
-
+    if "chat_service" not in st.session_state or rules_changed:
+        
+        # 1. Definisikan System Instruction yang baru
         system_instruction = f"""
         Anda adalah Pembimbing Akademik dan Editor Jurnal Scopus Q1.
         Tugas Anda adalah berdiskusi dengan penulis mengenai substansi, kebaruan (novelty), dan strategi sitasi paper mereka.
@@ -202,29 +211,40 @@ def copy_editing_chat_page():
         3. Beri saran yang kritis dan membangun terkait alur argumentasi, bahasa, dan metodologi.
         4. Gunakan bahasa yang formal dan profesional.
         """
-        st.session_state.chat_service = client.chats.create(
-            model=MODEL_PRO,
-            system_instruction=system_instruction
-        )
-        st.session_state.messages = [] # Kosongkan riwayat jika baru inisialisasi
-        st.session_state.messages.append(
-            {"role": "model", "content": f"Selamat datang! Saya adalah Editor Q1 Anda. Berdasarkan konteks **'{rules_placeholder}'**, apa bagian paper (Intro, Metode, Dll) yang ingin kita bahas terlebih dahulu?"}
-        )
+        
+        # 2. Buat objek chat service baru (Fix untuk TypeError)
+        try:
+            st.session_state.chat_service = client.chats.create(
+                model=MODEL_PRO, 
+                system_instruction=system_instruction
+            )
+            # 3. Update state dan pesan sambutan
+            st.session_state[LAST_RULES_KEY] = rules_placeholder
+            st.session_state.messages = [] 
+            st.session_state.messages.append(
+                {"role": "model", "content": f"Selamat datang! Sesi baru diinisialisasi. **Berdasarkan konteks Anda, apa bagian paper (Intro, Metode, Dll) yang ingin kita bahas terlebih dahulu?**"}
+            )
+            st.info("Sesi Chat diinisialisasi ulang dengan Aturan Konteks yang baru.")
+            
+        except Exception as e:
+            st.error(f"Gagal menginisialisasi Chat Service. Pastikan API Key valid dan Model {MODEL_PRO} tersedia. Error: {e}")
+            return
 
-    # --- Tampilkan Riwayat Chat ---
+
+    # --- 3. Tampilkan Riwayat Chat ---
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
 
-    # --- Input Pengguna (Chat) ---
-    if prompt := st.chat_input("Tanyakan tentang paper Anda atau kirim draf paragraf:"):
+    # --- 4. Input Pengguna (Chat) ---
+    # Disabled jika chat service belum berhasil dibuat
+    if prompt := st.chat_input("Tanyakan tentang paper Anda atau kirim draf paragraf:", disabled=("chat_service" not in st.session_state)):
         
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
             st.markdown(prompt)
 
         try:
-            # Mengirim pesan ke chat service
             response = st.session_state.chat_service.send_message(prompt)
             
             with st.chat_message("model"):
@@ -232,9 +252,10 @@ def copy_editing_chat_page():
             st.session_state.messages.append({"role": "model", "content": response.text})
             
         except Exception as e:
-            st.error(f"Terjadi kesalahan dalam diskusi: {e}")
-            st.session_state.pop("chat_service", None) # Hapus chat service
+            st.error(f"Terjadi kesalahan saat mengirim pesan: {e}")
+            st.session_state.pop("chat_service", None)
             st.session_state.messages = []
+            st.warning("Sesi chat terputus. Silakan coba kembali atau refresh halaman.")
 
 # --- 5. Definisi Prompt Templates (Sama seperti sebelumnya) ---
 
@@ -351,7 +372,7 @@ elif main_menu == "Copy Editing (Substansi)":
     )
     
     if sub_menu == "Diskusi Interaktif (Chat)":
-        copy_editing_chat_page() # Panggil fungsi chat baru
+        copy_editing_chat_page()
     elif sub_menu == "Judul (Analisis Sekali Jalan)":
         rules_placeholder = "Gunakan bahasa yang padat, formal, dan fokus pada kebaruan penelitian (novelty)."
         render_content_page(
