@@ -1,5 +1,6 @@
 import streamlit as st
 import io
+import time
 from google import genai
 from google.genai import types
 
@@ -8,19 +9,19 @@ from google.genai import types
 try:
     API_KEY = st.secrets["gemini_api_key"]
 except KeyError:
-    st.error("Kunci API Gemini tidak ditemukan. Pastikan Anda menyimpannya sebagai 'gemini_api_key'.")
+    st.error("Kunci API Gemini tidak ditemukan. Harap masukkan API key Anda di file .streamlit/secrets.toml atau di Streamlit Cloud Secrets.")
     st.stop()
 
 client = genai.Client(api_key=API_KEY)
 MODEL_FLASH = 'gemini-2.5-flash'
-MODEL_PRO = 'gemini-2.5-pro' # Menggunakan Pro untuk analisis substansi & gambar yang lebih baik
+MODEL_PRO = 'gemini-2.5-pro' # Digunakan untuk tugas penalaran kompleks dan multimodal
 TEMPERATURE = 0.3
 
 # --- 1. Fungsi Inti: Panggilan Model Gemini ---
 
 def call_gemini_api(system_instruction, user_prompt, model_choice=MODEL_FLASH, file_parts=None):
     """
-    Fungsi utilitas untuk memanggil Gemini API, sekarang mendukung input file.
+    Fungsi utilitas untuk memanggil Gemini API, mendukung input multimodal (teks dan gambar).
     """
     contents = [user_prompt]
     if file_parts:
@@ -47,7 +48,7 @@ def call_gemini_api(system_instruction, user_prompt, model_choice=MODEL_FLASH, f
 
 def extract_rules_from_file(uploaded_file):
     """
-    Mengekstrak aturan format dari TXT, PDF, atau gambar (JPG/PNG).
+    Mengekstrak aturan format dari TXT atau gambar (JPG/PNG).
     """
     file_type = uploaded_file.type
     
@@ -62,12 +63,11 @@ def extract_rules_from_file(uploaded_file):
             mime_type=file_type
         )
         
-        # Gunakan model Pro untuk ekstraksi teks yang andal dari gambar
         prompt = "Ekstrak semua aturan format, gaya sitasi, dan batasan kata yang terlihat jelas dari gambar ini. Format outputnya sebagai daftar yang jelas."
         
-        st.info("Mengambil aturan format dari gambar (Ini mungkin memakan waktu lebih lama)...")
+        st.info("Mengambil aturan format dari gambar (Menggunakan Gemini 2.5 Pro)...")
         rules_text = call_gemini_api(
-            system_instruction="Anda adalah spesialis ekstraksi data dari format jurnal.",
+            system_instruction="Anda adalah spesialis ekstraksi data dari format jurnal Scopus Q1.",
             user_prompt=prompt,
             model_choice=MODEL_PRO,
             file_parts=[image_part]
@@ -75,7 +75,7 @@ def extract_rules_from_file(uploaded_file):
         return rules_text if rules_text else "Gagal mengekstrak aturan dari gambar."
 
     elif file_type == "application/pdf":
-        st.warning("Ekstraksi PDF kompleks dan membutuhkan pemrosesan yang berat. Silakan salin teks aturan dari PDF secara manual ke kotak teks, atau gunakan fitur upload gambar (foto halaman PDF).")
+        st.warning("Ekstraksi PDF kompleks. Silakan salin teks aturan dari PDF secara manual atau unggah sebagai file gambar (screenshot/foto halaman).")
         return None
     
     else:
@@ -83,11 +83,11 @@ def extract_rules_from_file(uploaded_file):
         return None
 
 
-# --- 3. Template Halaman Universal (UPDATE) ---
+# --- 3. Template Halaman Universal (Proofreading & Templating) ---
 
 def render_content_page(title, instructions, action_type, rules_context_placeholder, specific_prompt_template, model_to_use=MODEL_FLASH):
     """
-    Template Halaman dengan penambahan Upload Format dan Download Hasil.
+    Template Halaman dengan Upload Format dan Download Hasil.
     """
     st.header(title)
     st.markdown(instructions)
@@ -95,7 +95,6 @@ def render_content_page(title, instructions, action_type, rules_context_placehol
     # --- INPUT RULES / CONTEXT ---
     st.subheader("1. Aturan Konteks Jurnal")
     
-    # Pilih sumber input aturan
     rule_source = st.radio(
         "Pilih Sumber Aturan Format:",
         ("Teks Manual", "Upload File (.txt, .jpg, .png)"),
@@ -103,6 +102,7 @@ def render_content_page(title, instructions, action_type, rules_context_placehol
     )
 
     context = ""
+    uploaded_file = None
     if rule_source == "Teks Manual":
         context = st.text_area(
             "Masukkan aturan jurnal (e.g., gaya sitasi, batasan kata, formalitas):",
@@ -119,8 +119,8 @@ def render_content_page(title, instructions, action_type, rules_context_placehol
         if uploaded_file is not None:
             context = extract_rules_from_file(uploaded_file)
             if context:
-                st.info("Aturan Format yang Diekstrak:")
-                st.text(context[:500] + "...") # Tampilkan sebagian kecil
+                st.info("Aturan Format yang Diekstrak (Sebagian Tampil):")
+                st.text(context[:500] + "...") 
     
     if not context:
         st.warning("Harap masukkan atau unggah Aturan Konteks.")
@@ -128,7 +128,6 @@ def render_content_page(title, instructions, action_type, rules_context_placehol
     st.subheader("2. Teks Draft")
     input_text = st.text_area("Masukkan teks yang akan diproses:", height=300, key=f"{title}_input")
 
-    # Inisialisasi state untuk menyimpan hasil
     if f"{title}_result" not in st.session_state:
         st.session_state[f"{title}_result"] = ""
 
@@ -138,7 +137,6 @@ def render_content_page(title, instructions, action_type, rules_context_placehol
         else:
             final_prompt = specific_prompt_template.format(input_text=input_text, rules_context=context)
             
-            # Panggil API dengan model yang sesuai
             result = call_gemini_api(
                 system_instruction=f"Anda adalah {action_type} Akademik tingkat Scopus Q1. Selalu patuhi Rules Context.", 
                 user_prompt=final_prompt,
@@ -171,12 +169,74 @@ def render_content_page(title, instructions, action_type, rules_context_placehol
             mime="text/plain"
         )
 
-# --- 4. Definisi Fungsi Spesifik (Prompt Templates & Routing) ---
+# --- 4. Fungsi Copy Editing Chat Interaktif (Fitur Baru) ---
 
-# ... [Definisi prompt_template seperti pada revisi sebelumnya tetap sama] ...
-# Karena prompt templates tidak berubah, kita hanya perlu mendefinisikan routing:
+def copy_editing_chat_page():
+    st.header("💬 Copy Editing Interaktif (Analisis Substansi)")
+    st.markdown("Diskusikan alur argumentasi, sitasi, dan relevansi substansi paper Anda dengan AI. Model ini mensimulasikan pemeriksaan Scopus Q1.")
 
-# --- Definisi Fungsi Spesifik (Prompt Templates, sama seperti sebelumnya) ---
+    # --- 1. Aturan Konteks (Diambil dari Input Teks) ---
+    rules_placeholder = st.text_area(
+        "Masukkan Aturan Konteks Jurnal dan/atau Informasi Sitasi/Jurnal yang Ingin Dicek (Wajib):",
+        value="Contoh: Jurnal target saya adalah 'Journal of Applied Sciences' (Scopus Q1, H-Index 90). Kami harus mengutip 50% sumber dari 5 tahun terakhir.",
+        height=100,
+        key="chat_rules_input"
+    )
+    
+    # Inisialisasi riwayat chat dan chat service
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
+    
+    if "chat_service" not in st.session_state or st.session_state.chat_service.system_instruction != rules_placeholder:
+        # Reset atau inisialisasi chat service jika Rules Context berubah
+        if not rules_placeholder:
+             st.warning("Mohon masukkan Aturan Konteks untuk memulai diskusi.")
+             return
+
+        system_instruction = f"""
+        Anda adalah Pembimbing Akademik dan Editor Jurnal Scopus Q1.
+        Tugas Anda adalah berdiskusi dengan penulis mengenai substansi, kebaruan (novelty), dan strategi sitasi paper mereka.
+        Anda harus:
+        1. Selalu mengacu pada RULES CONTEXT: "{rules_placeholder}".
+        2. Mensimulasikan pemeriksaan sitasi dan ketersediaan jurnal di Scopus/Scimago berdasarkan konteks yang diberikan.
+        3. Beri saran yang kritis dan membangun terkait alur argumentasi, bahasa, dan metodologi.
+        4. Gunakan bahasa yang formal dan profesional.
+        """
+        st.session_state.chat_service = client.chats.create(
+            model=MODEL_PRO,
+            system_instruction=system_instruction
+        )
+        st.session_state.messages = [] # Kosongkan riwayat jika baru inisialisasi
+        st.session_state.messages.append(
+            {"role": "model", "content": f"Selamat datang! Saya adalah Editor Q1 Anda. Berdasarkan konteks **'{rules_placeholder}'**, apa bagian paper (Intro, Metode, Dll) yang ingin kita bahas terlebih dahulu?"}
+        )
+
+    # --- Tampilkan Riwayat Chat ---
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+
+    # --- Input Pengguna (Chat) ---
+    if prompt := st.chat_input("Tanyakan tentang paper Anda atau kirim draf paragraf:"):
+        
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
+
+        try:
+            # Mengirim pesan ke chat service
+            response = st.session_state.chat_service.send_message(prompt)
+            
+            with st.chat_message("model"):
+                st.markdown(response.text)
+            st.session_state.messages.append({"role": "model", "content": response.text})
+            
+        except Exception as e:
+            st.error(f"Terjadi kesalahan dalam diskusi: {e}")
+            st.session_state.pop("chat_service", None) # Hapus chat service
+            st.session_state.messages = []
+
+# --- 5. Definisi Prompt Templates (Sama seperti sebelumnya) ---
 
 def copy_editing_title_prompt():
     return """
@@ -187,20 +247,6 @@ def copy_editing_title_prompt():
     {input_text}
 
     Tampilkan hasilnya dalam format 'Judul Asli' dan 'Judul Optimasi (Sertakan 3 Opsi Terbaik)'.
-    """
-
-def copy_editing_main_text_prompt():
-    return """
-    Tugas Anda adalah melakukan Copy Editing substantif pada Teks Utama. Fokus pada:
-    1. Koherensi logis antar paragraf.
-    2. Konsistensi argumentasi dan alur narasi akademik.
-    3. Meningkatkan kepadatan informasi (conciseness).
-    Gunakan Rules Context ({rules_context}) sebagai panduan.
-
-    ### Teks Draft:
-    {input_text}
-
-    Tampilkan hasilnya dalam format 'Original Text' dan 'Suggested Logical Revisions'.
     """
 
 def proofreading_grammar_prompt():
@@ -268,7 +314,7 @@ def templating_imrad_prompt():
     """
 
 
-# --- 5. Struktur Menu Utama Streamlit (Routing) ---
+# --- 6. Struktur Menu Utama Streamlit (Routing) ---
 
 # Pengaturan Global
 st.set_page_config(
@@ -295,34 +341,26 @@ if main_menu == "Tentang Aplikasi":
     st.subheader("Prinsip Kerja:")
     st.markdown("Aplikasi ini menggunakan **Prompt Engineering** canggih untuk menginstruksikan Gemini 2.5 Flash/Pro agar bertindak sebagai editor Q1.")
     st.markdown(f"Model Dasar: **{MODEL_FLASH}**")
-    st.markdown(f"Model untuk Analisis Substansi/Gambar: **{MODEL_PRO}**")
-
+    st.markdown(f"Model untuk Analisis Substansi/Diskusi: **{MODEL_PRO}**")
 
 elif main_menu == "Copy Editing (Substansi)":
-    st.sidebar.subheader("2. Pilih Bagian Paper (Copy Editing)")
+    st.sidebar.subheader("2. Pilih Mode Analisis")
     sub_menu = st.sidebar.selectbox(
         "Fokus Substansi:",
-        ["Judul", "Teks Utama (Intro, Metode, Dll)"]
+        ["Diskusi Interaktif (Chat)", "Judul (Analisis Sekali Jalan)"]
     )
-    rules_placeholder = "Gunakan bahasa yang padat, formal, dan fokus pada kebaruan penelitian (novelty)."
-
-    if sub_menu == "Judul":
+    
+    if sub_menu == "Diskusi Interaktif (Chat)":
+        copy_editing_chat_page() # Panggil fungsi chat baru
+    elif sub_menu == "Judul (Analisis Sekali Jalan)":
+        rules_placeholder = "Gunakan bahasa yang padat, formal, dan fokus pada kebaruan penelitian (novelty)."
         render_content_page(
             "Copy Editing: Judul Paper",
             "Fokus pada kejelasan, dampak, dan relevansi Judul sesuai standar Q1.",
             "Copy Editor",
             rules_placeholder,
             copy_editing_title_prompt(),
-            model_to_use=MODEL_PRO # Gunakan PRO untuk analisis substansi yang lebih dalam
-        )
-    elif sub_menu == "Teks Utama (Intro, Metode, Dll)":
-        render_content_page(
-            "Copy Editing: Teks Utama",
-            "Memastikan alur dan substansi argumentasi kuat dan koheren di seluruh paper.",
-            "Copy Editor",
-            rules_placeholder,
-            copy_editing_main_text_prompt(),
-            model_to_use=MODEL_PRO # Gunakan PRO untuk analisis substansi yang lebih dalam
+            model_to_use=MODEL_PRO 
         )
 
 elif main_menu == "Proofreading (Grammar/Format)":
@@ -374,7 +412,7 @@ elif main_menu == "Templating (Struktur)":
             "Templating Specialist",
             templating_rules,
             templating_abstract_prompt(),
-            model_to_use=MODEL_PRO # Menggunakan PRO untuk struktur dan copywriting yang lebih baik
+            model_to_use=MODEL_PRO
         )
     elif sub_menu == "Struktur Penuh (IMRAD/Pendahuluan)":
         render_content_page(
@@ -383,5 +421,5 @@ elif main_menu == "Templating (Struktur)":
             "Templating Specialist",
             templating_rules,
             templating_imrad_prompt(),
-            model_to_use=MODEL_PRO # Menggunakan PRO untuk struktur dan penalaran yang lebih baik
+            model_to_use=MODEL_PRO
         )
